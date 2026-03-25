@@ -5,7 +5,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-import textstat
 
 app = FastAPI(
     title="Text Intel API",
@@ -86,15 +85,18 @@ def _extract_keywords(text: str, top_n: int = 8) -> list[str]:
 
 
 def _get_readability(text: str) -> str:
-    try:
-        score = textstat.flesch_reading_ease(text)
-        if score >= 60:
-            return "easy"
-        elif score >= 30:
-            return "medium"
-        return "hard"
-    except Exception:
+    words = text.split()
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s for s in sentences if s.strip()]
+    if not sentences or not words:
         return "medium"
+    avg_words = len(words) / len(sentences)
+    avg_len = sum(len(w) for w in words) / len(words)
+    if avg_words < 15 and avg_len < 5:
+        return "easy"
+    elif avg_words > 25 or avg_len > 7:
+        return "hard"
+    return "medium"
 
 
 def _get_toxicity(text: str) -> str:
