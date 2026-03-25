@@ -1,15 +1,31 @@
 import os
-import json
 import re
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
-import anthropic
+
+# Local NLP libraries
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from langdetect import detect, LangDetectException
+import textstat
+import nltk
+from nltk.tokenize import sent_tokenize, word_tokenize
+from collections import Counter
+import math
+
+# Download required NLTK data (silent)
+for resource in ["punkt", "punkt_tab", "stopwords"]:
+    try:
+        nltk.download(resource, quiet=True)
+    except Exception:
+        pass
+
+from nltk.corpus import stopwords
 
 app = FastAPI(
     title="Text Intel API",
-    description="AI-powered text analysis using Claude",
-    version="1.0.0",
+    description="Local NLP-powered text analysis (no external APIs)",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -20,12 +36,154 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_client():
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
-    return anthropic.Anthropic(api_key=api_key)
+# ── Singletons ───────────────────────────────────────────────────────────────
+_vader = SentimentIntensityAnalyzer()
 
+# ── Toxicity keyword blacklist ────────────────────────────────────────────────
+_TOXIC_HIGH = {
+    "kill", "murder", "rape", "terrorist", "bomb", "genocide", "massacre",
+    "nigger", "faggot", "cunt", "fuck you", "die bitch",
+}
+_TOXIC_MED = {
+    "idiot", "stupid", "moron", "loser", "jerk", "ass", "bastard",
+    "hate", "racist", "sexist", "bullshit", "dumb", "pathetic",
+}
+_TOXIC_LOW = {
+    "annoying", "terrible", "awful", "disgusting", "horrible", "lame",
+    "shut up", "ugly",
+}
+
+# ── Topic keyword rules ───────────────────────────────────────────────────────
+_TOPIC_RULES: list[tuple[str, set[str]]] = [
+    ("tech", {
+        "technology", "software", "hardware", "ai", "machine learning",
+        "computer", "internet", "data", "cloud", "algorithm", "robot",
+        "programming", "developer", "startup", "app", "digital",
+    }),
+    ("business", {
+        "market", "stock", "economy", "finance", "investment", "revenue",
+        "profit", "company", "corporate", "trade", "gdp", "inflation",
+        "entrepreneur", "startup", "industry", "commerce",
+    }),
+    ("sports", {
+        "football", "soccer", "basketball", "tennis", "olympics", "athlete",
+        "game", "match", "tournament", "championship", "score", "team",
+        "player", "coach", "baseball", "cricket",
+    }),
+    ("health", {
+        "health", "medical", "doctor", "hospital", "disease", "cancer",
+        "vaccine", "treatment", "mental health", "diet", "exercise",
+        "pandemic", "virus", "nutrition", "wellness", "medicine",
+    }),
+    ("politics", {
+        "government", "election", "president", "congress", "senate",
+        "parliament", "policy", "democrat", "republican", "vote",
+        "legislation", "law", "political", "party", "minister",
+    }),
+    ("entertainment", {
+        "movie", "film", "music", "celebrity", "actor", "singer",
+        "concert", "album", "television", "show", "award", "oscar",
+        "grammy", "netflix", "streaming", "game", "anime",
+    }),
+]
+
+
+# ── Helper functions ──────────────────────────────────────────────────────────
+
+def _detect_language(text: str) -> str:
+    try:
+        return detect(text)
+    except LangDetectException:
+        return "en"
+
+
+def _get_sentiment(text: str) -> tuple[str, float]:
+    scores = _vader.polarity_scores(text)
+    compound = scores["compound"]
+    if compound >= 0.05:
+        label = "positive"
+        score = 0.5 + compound * 0.5  # map [0.05, 1] → [0.525, 1.0]
+    elif compound <= -0.05:
+        label = "negative"
+        score = 0.5 + compound * 0.5  # map [-1, -0.05] → [0.0, 0.475]
+    else:
+        label = "neutral"
+        score = 0.5
+    return label, round(max(0.0, min(1.0, score)), 4)
+
+
+def _summarize(text: str, n: int = 2) -> str:
+    """Return first n sentences as summary."""
+    try:
+        sentences = sent_tokenize(text)
+    except Exception:
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+    return " ".join(sentences[:n]).strip()
+
+
+def _extract_keywords(text: str, top_n: int = 8) -> list[str]:
+    """TF-IDF-style keyword extraction over a single document."""
+    try:
+        tokens = word_tokenize(text.lower())
+    except Exception:
+        tokens = text.lower().split()
+
+    try:
+        stop = set(stopwords.words("english"))
+    except Exception:
+        stop = set()
+
+    # Keep alphabetic tokens, length ≥ 3, not stopwords
+    words = [w for w in tokens if w.isalpha() and len(w) >= 3 and w not in stop]
+    if not words:
+        return []
+
+    freq = Counter(words)
+    total = len(words)
+    # Score = tf * log(1 / relative_freq)  (simple idf proxy)
+    scored = {w: (c / total) * math.log(total / c + 1) for w, c in freq.items()}
+    return [w for w, _ in sorted(scored.items(), key=lambda x: -x[1])[:top_n]]
+
+
+def _get_readability(text: str) -> str:
+    try:
+        score = textstat.flesch_reading_ease(text)
+    except Exception:
+        return "medium"
+    if score >= 60:
+        return "easy"
+    elif score >= 30:
+        return "medium"
+    else:
+        return "hard"
+
+
+def _get_toxicity(text: str) -> str:
+    lower = text.lower()
+    for phrase in _TOXIC_HIGH:
+        if phrase in lower:
+            return "high"
+    for phrase in _TOXIC_MED:
+        if phrase in lower:
+            return "medium"
+    for phrase in _TOXIC_LOW:
+        if phrase in lower:
+            return "low"
+    return "none"
+
+
+def _get_topics(text: str) -> list[str]:
+    lower = text.lower()
+    matched: list[str] = []
+    for topic, keywords in _TOPIC_RULES:
+        if any(kw in lower for kw in keywords):
+            matched.append(topic)
+        if len(matched) >= 5:
+            break
+    return matched if matched else ["other"]
+
+
+# ── Models ────────────────────────────────────────────────────────────────────
 
 class AnalyzeRequest(BaseModel):
     text: str
@@ -53,23 +211,7 @@ class AnalyzeResponse(BaseModel):
     word_count: int
 
 
-ANALYSIS_PROMPT = """Analyze the following text and return a JSON object with these exact fields:
-
-- sentiment: one of "positive", "negative", or "neutral"
-- sentiment_score: float between 0.0 and 1.0 (1.0 = most positive, 0.0 = most negative, 0.5 = neutral)
-- summary: concise summary in 3 sentences or fewer
-- keywords: array of 5-10 important keywords/phrases from the text
-- language: ISO 639-1 language code (e.g., "en", "zh", "ko", "ja", "fr", etc.)
-- readability: one of "easy", "medium", or "hard"
-- toxicity: one of "none", "low", "medium", or "high"
-- topics: array of 2-5 main topics covered in the text
-- word_count: approximate word count as integer
-
-Return ONLY valid JSON, no markdown, no explanation.
-
-Text to analyze:
-{text}"""
-
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
@@ -78,69 +220,16 @@ async def health():
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(request: AnalyzeRequest):
-    word_count = len(request.text.split())
+    text = request.text
+    word_count = len(text.split())
 
-    try:
-        message = get_client().messages.create(
-            model="claude-3-5-haiku-20241022",
-            max_tokens=1024,
-            messages=[
-                {
-                    "role": "user",
-                    "content": ANALYSIS_PROMPT.format(text=request.text),
-                }
-            ],
-        )
-    except anthropic.AuthenticationError:
-        raise HTTPException(status_code=500, detail="Invalid API key configuration")
-    except anthropic.RateLimitError:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded, please try again later")
-    except anthropic.APIError as e:
-        raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
-
-    raw = message.content[0].text.strip()
-
-    # Strip markdown code fences if present
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=502, detail=f"Failed to parse AI response: {str(e)}")
-
-    # Normalize and validate fields
-    sentiment = data.get("sentiment", "neutral").lower()
-    if sentiment not in ("positive", "negative", "neutral"):
-        sentiment = "neutral"
-
-    sentiment_score = float(data.get("sentiment_score", 0.5))
-    sentiment_score = max(0.0, min(1.0, sentiment_score))
-
-    readability = data.get("readability", "medium").lower()
-    if readability not in ("easy", "medium", "hard"):
-        readability = "medium"
-
-    toxicity = data.get("toxicity", "none").lower()
-    if toxicity not in ("none", "low", "medium", "high"):
-        toxicity = "none"
-
-    keywords = data.get("keywords", [])
-    if not isinstance(keywords, list):
-        keywords = []
-
-    topics = data.get("topics", [])
-    if not isinstance(topics, list):
-        topics = []
-
-    language = str(data.get("language", "en"))
-    summary = str(data.get("summary", ""))
-    ai_word_count = data.get("word_count", word_count)
-    if not isinstance(ai_word_count, int):
-        try:
-            ai_word_count = int(ai_word_count)
-        except (ValueError, TypeError):
-            ai_word_count = word_count
+    language = _detect_language(text) if request.lang == "auto" else request.lang
+    sentiment, sentiment_score = _get_sentiment(text)
+    summary = _summarize(text)
+    keywords = _extract_keywords(text)
+    readability = _get_readability(text)
+    toxicity = _get_toxicity(text)
+    topics = _get_topics(text)
 
     return AnalyzeResponse(
         sentiment=sentiment,
@@ -151,7 +240,7 @@ async def analyze(request: AnalyzeRequest):
         readability=readability,
         toxicity=toxicity,
         topics=topics,
-        word_count=ai_word_count,
+        word_count=word_count,
     )
 
 
