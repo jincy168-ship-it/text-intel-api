@@ -13,12 +13,18 @@ from nltk.tokenize import sent_tokenize, word_tokenize
 from collections import Counter
 import math
 
-# Download required NLTK data (silent)
-for resource in ["punkt", "punkt_tab", "stopwords"]:
+# NLTK data is pre-downloaded via nltk_setup.py at startup (see Procfile)
+# Fallback: try download if missing
+import nltk.data
+for resource in ["tokenizers/punkt_tab", "corpora/stopwords"]:
     try:
-        nltk.download(resource, quiet=True)
-    except Exception:
-        pass
+        nltk.data.find(resource)
+    except LookupError:
+        name = resource.split("/")[-1]
+        try:
+            nltk.download(name, quiet=True)
+        except Exception:
+            pass
 
 from nltk.corpus import stopwords
 
