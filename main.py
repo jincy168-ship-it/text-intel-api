@@ -78,7 +78,7 @@ async def analyze(request: AnalyzeRequest):
 
     try:
         message = client.messages.create(
-            model="claude-haiku-4-5",
+            model="claude-haiku-3-5",
             max_tokens=1024,
             messages=[
                 {
