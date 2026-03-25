@@ -1,37 +1,16 @@
 import os
 import re
+from collections import Counter
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
-
-# Local NLP libraries
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from langdetect import detect, LangDetectException
 import textstat
-import nltk
-from nltk.tokenize import sent_tokenize, word_tokenize
-from collections import Counter
-import math
-
-# NLTK data is pre-downloaded via nltk_setup.py at startup (see Procfile)
-# Fallback: try download if missing
-import nltk.data
-for resource in ["tokenizers/punkt_tab", "corpora/stopwords"]:
-    try:
-        nltk.data.find(resource)
-    except LookupError:
-        name = resource.split("/")[-1]
-        try:
-            nltk.download(name, quiet=True)
-        except Exception:
-            pass
-
-from nltk.corpus import stopwords
 
 app = FastAPI(
     title="Text Intel API",
-    description="Local NLP-powered text analysis (no external APIs)",
-    version="2.0.0",
+    description="Local NLP-powered text analysis",
+    version="2.1.0",
 )
 
 app.add_middleware(
@@ -42,154 +21,98 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Singletons ───────────────────────────────────────────────────────────────
 _vader = SentimentIntensityAnalyzer()
 
-# ── Toxicity keyword blacklist ────────────────────────────────────────────────
-_TOXIC_HIGH = {
-    "kill", "murder", "rape", "terrorist", "bomb", "genocide", "massacre",
-    "nigger", "faggot", "cunt", "fuck you", "die bitch",
-}
-_TOXIC_MED = {
-    "idiot", "stupid", "moron", "loser", "jerk", "ass", "bastard",
-    "hate", "racist", "sexist", "bullshit", "dumb", "pathetic",
-}
-_TOXIC_LOW = {
-    "annoying", "terrible", "awful", "disgusting", "horrible", "lame",
-    "shut up", "ugly",
+_STOPWORDS = {
+    "the","a","an","and","or","but","in","on","at","to","for","of","with",
+    "is","are","was","were","be","been","being","have","has","had","do",
+    "does","did","will","would","could","should","may","might","shall",
+    "this","that","these","those","i","you","he","she","it","we","they",
+    "my","your","his","her","its","our","their","what","which","who","how",
+    "not","no","so","if","as","by","from","up","out","about","into","than",
 }
 
-# ── Topic keyword rules ───────────────────────────────────────────────────────
-_TOPIC_RULES: list[tuple[str, set[str]]] = [
-    ("tech", {
-        "technology", "software", "hardware", "ai", "machine learning",
-        "computer", "internet", "data", "cloud", "algorithm", "robot",
-        "programming", "developer", "startup", "app", "digital",
-    }),
-    ("business", {
-        "market", "stock", "economy", "finance", "investment", "revenue",
-        "profit", "company", "corporate", "trade", "gdp", "inflation",
-        "entrepreneur", "startup", "industry", "commerce",
-    }),
-    ("sports", {
-        "football", "soccer", "basketball", "tennis", "olympics", "athlete",
-        "game", "match", "tournament", "championship", "score", "team",
-        "player", "coach", "baseball", "cricket",
-    }),
-    ("health", {
-        "health", "medical", "doctor", "hospital", "disease", "cancer",
-        "vaccine", "treatment", "mental health", "diet", "exercise",
-        "pandemic", "virus", "nutrition", "wellness", "medicine",
-    }),
-    ("politics", {
-        "government", "election", "president", "congress", "senate",
-        "parliament", "policy", "democrat", "republican", "vote",
-        "legislation", "law", "political", "party", "minister",
-    }),
-    ("entertainment", {
-        "movie", "film", "music", "celebrity", "actor", "singer",
-        "concert", "album", "television", "show", "award", "oscar",
-        "grammy", "netflix", "streaming", "game", "anime",
-    }),
+_TOXIC_HIGH = {"kill","murder","rape","terrorist","bomb","genocide","massacre"}
+_TOXIC_MED  = {"idiot","stupid","moron","loser","hate","racist","bullshit"}
+_TOXIC_LOW  = {"annoying","terrible","awful","horrible","lame","shut up","ugly"}
+
+_TOPIC_RULES = [
+    ("tech",          {"technology","software","ai","computer","internet","data","cloud","algorithm","app","digital","robot","developer"}),
+    ("business",      {"market","stock","economy","finance","investment","revenue","profit","company","trade","startup","commerce"}),
+    ("sports",        {"football","soccer","basketball","tennis","olympics","athlete","game","match","tournament","championship","team","player"}),
+    ("health",        {"health","medical","doctor","hospital","disease","cancer","vaccine","treatment","mental","diet","exercise","virus","medicine"}),
+    ("politics",      {"government","election","president","congress","parliament","policy","vote","legislation","law","minister"}),
+    ("entertainment", {"movie","film","music","celebrity","actor","singer","concert","album","television","netflix","streaming","anime"}),
+]
+
+_LANG_PATTERNS = [
+    ("zh", re.compile(r'[\u4e00-\u9fff]')),
+    ("ko", re.compile(r'[\uac00-\ud7a3]')),
+    ("ja", re.compile(r'[\u3040-\u30ff]')),
+    ("ar", re.compile(r'[\u0600-\u06ff]')),
+    ("ru", re.compile(r'[\u0400-\u04ff]')),
 ]
 
 
-# ── Helper functions ──────────────────────────────────────────────────────────
-
 def _detect_language(text: str) -> str:
-    try:
-        return detect(text)
-    except LangDetectException:
-        return "en"
+    for lang, pat in _LANG_PATTERNS:
+        if pat.search(text):
+            return lang
+    return "en"
 
 
 def _get_sentiment(text: str) -> tuple[str, float]:
     scores = _vader.polarity_scores(text)
-    compound = scores["compound"]
-    if compound >= 0.05:
-        label = "positive"
-        score = 0.5 + compound * 0.5  # map [0.05, 1] → [0.525, 1.0]
-    elif compound <= -0.05:
-        label = "negative"
-        score = 0.5 + compound * 0.5  # map [-1, -0.05] → [0.0, 0.475]
-    else:
-        label = "neutral"
-        score = 0.5
-    return label, round(max(0.0, min(1.0, score)), 4)
+    c = scores["compound"]
+    if c >= 0.05:
+        return "positive", round(0.5 + c * 0.5, 4)
+    elif c <= -0.05:
+        return "negative", round(0.5 + c * 0.5, 4)
+    return "neutral", 0.5
 
 
 def _summarize(text: str, n: int = 2) -> str:
-    """Return first n sentences as summary."""
-    try:
-        sentences = sent_tokenize(text)
-    except Exception:
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-    return " ".join(sentences[:n]).strip()
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    return " ".join(sentences[:n])
 
 
 def _extract_keywords(text: str, top_n: int = 8) -> list[str]:
-    """TF-IDF-style keyword extraction over a single document."""
-    try:
-        tokens = word_tokenize(text.lower())
-    except Exception:
-        tokens = text.lower().split()
-
-    try:
-        stop = set(stopwords.words("english"))
-    except Exception:
-        stop = set()
-
-    # Keep alphabetic tokens, length ≥ 3, not stopwords
-    words = [w for w in tokens if w.isalpha() and len(w) >= 3 and w not in stop]
+    words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+    words = [w for w in words if w not in _STOPWORDS]
     if not words:
         return []
-
     freq = Counter(words)
-    total = len(words)
-    # Score = tf * log(1 / relative_freq)  (simple idf proxy)
-    scored = {w: (c / total) * math.log(total / c + 1) for w, c in freq.items()}
-    return [w for w, _ in sorted(scored.items(), key=lambda x: -x[1])[:top_n]]
+    return [w for w, _ in freq.most_common(top_n)]
 
 
 def _get_readability(text: str) -> str:
     try:
         score = textstat.flesch_reading_ease(text)
+        if score >= 60:
+            return "easy"
+        elif score >= 30:
+            return "medium"
+        return "hard"
     except Exception:
         return "medium"
-    if score >= 60:
-        return "easy"
-    elif score >= 30:
-        return "medium"
-    else:
-        return "hard"
 
 
 def _get_toxicity(text: str) -> str:
     lower = text.lower()
-    for phrase in _TOXIC_HIGH:
-        if phrase in lower:
-            return "high"
-    for phrase in _TOXIC_MED:
-        if phrase in lower:
-            return "medium"
-    for phrase in _TOXIC_LOW:
-        if phrase in lower:
-            return "low"
+    for p in _TOXIC_HIGH:
+        if p in lower: return "high"
+    for p in _TOXIC_MED:
+        if p in lower: return "medium"
+    for p in _TOXIC_LOW:
+        if p in lower: return "low"
     return "none"
 
 
 def _get_topics(text: str) -> list[str]:
     lower = text.lower()
-    matched: list[str] = []
-    for topic, keywords in _TOPIC_RULES:
-        if any(kw in lower for kw in keywords):
-            matched.append(topic)
-        if len(matched) >= 5:
-            break
-    return matched if matched else ["other"]
+    matched = [t for t, kws in _TOPIC_RULES if any(k in lower for k in kws)]
+    return matched[:5] if matched else ["other"]
 
-
-# ── Models ────────────────────────────────────────────────────────────────────
 
 class AnalyzeRequest(BaseModel):
     text: str
@@ -197,7 +120,7 @@ class AnalyzeRequest(BaseModel):
 
     @field_validator("text")
     @classmethod
-    def text_max_length(cls, v):
+    def validate_text(cls, v):
         if len(v) > 5000:
             raise ValueError("Text exceeds 5000 character limit")
         if not v.strip():
@@ -217,8 +140,6 @@ class AnalyzeResponse(BaseModel):
     word_count: int
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
-
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -227,26 +148,18 @@ async def health():
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(request: AnalyzeRequest):
     text = request.text
-    word_count = len(text.split())
-
     language = _detect_language(text) if request.lang == "auto" else request.lang
-    sentiment, sentiment_score = _get_sentiment(text)
-    summary = _summarize(text)
-    keywords = _extract_keywords(text)
-    readability = _get_readability(text)
-    toxicity = _get_toxicity(text)
-    topics = _get_topics(text)
-
+    sentiment, score = _get_sentiment(text)
     return AnalyzeResponse(
         sentiment=sentiment,
-        sentiment_score=sentiment_score,
-        summary=summary,
-        keywords=keywords,
+        sentiment_score=score,
+        summary=_summarize(text),
+        keywords=_extract_keywords(text),
         language=language,
-        readability=readability,
-        toxicity=toxicity,
-        topics=topics,
-        word_count=word_count,
+        readability=_get_readability(text),
+        toxicity=_get_toxicity(text),
+        topics=_get_topics(text),
+        word_count=len(text.split()),
     )
 
 
