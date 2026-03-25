@@ -20,7 +20,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+def get_client():
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
+    return anthropic.Anthropic(api_key=api_key)
 
 
 class AnalyzeRequest(BaseModel):
@@ -77,7 +81,7 @@ async def analyze(request: AnalyzeRequest):
     word_count = len(request.text.split())
 
     try:
-        message = client.messages.create(
+        message = get_client().messages.create(
             model="claude-3-5-haiku-20241022",
             max_tokens=1024,
             messages=[
