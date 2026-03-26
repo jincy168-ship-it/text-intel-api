@@ -43,6 +43,117 @@ English text analysis API. Single API call returns sentiment, keywords, topics, 
 }
 ```
 
+### Example Use Cases
+
+#### 1) Long product-feedback text
+
+**Request**
+```json
+{
+  "text": "FastAPI helped our small product team ship an internal analytics dashboard in two weekends instead of two months. The API was easy to document, the response times stayed stable under load, and the team finally stopped arguing about whether Python was too slow for production. We still had rough edges around deployment and monitoring, but overall the migration reduced support tickets, made onboarding easier, and gave the product manager much better visibility into customer behavior.",
+  "lang": "auto"
+}
+```
+
+**Response**
+```json
+{
+  "sentiment": "positive",
+  "sentiment_score": 0.83,
+  "summary": "FastAPI helped a product team ship an internal analytics dashboard much faster than expected. The migration improved maintenance, visibility, and onboarding despite some deployment and monitoring rough edges.",
+  "keywords": ["fastapi", "product", "team", "internal", "analytics", "dashboard", "response", "maintenance"],
+  "language": "en",
+  "readability": "medium",
+  "toxicity": "none",
+  "topics": ["tech", "business"],
+  "word_count": 57
+}
+```
+
+#### 2) Negative support / complaint text
+
+**Request**
+```json
+{
+  "text": "This service is a complete mess. The support team ignored us for days, the dashboard kept crashing during client demos, and every promised fix introduced a new problem. We lost trust and had to apologize to customers.",
+  "lang": "auto"
+}
+```
+
+**Response**
+```json
+{
+  "sentiment": "negative",
+  "sentiment_score": 0.12,
+  "summary": "The service caused repeated failures, poor support experiences, and customer trust issues. The user describes crashes, delays, and broken promises.",
+  "keywords": ["service", "complete", "mess", "support", "team", "ignored", "dashboard", "customers"],
+  "language": "en",
+  "readability": "medium",
+  "toxicity": "none",
+  "topics": ["tech", "business"],
+  "word_count": 34
+}
+```
+
+#### 3) Toxic / hostile language edge case
+
+**Request**
+```json
+{
+  "text": "Your product is awful, your roadmap is stupid, and this whole release was a bullshit mess.",
+  "lang": "auto"
+}
+```
+
+**Response**
+```json
+{
+  "sentiment": "negative",
+  "sentiment_score": 0.09,
+  "summary": "Your product is awful, your roadmap is stupid, and this whole release was a bullshit mess.",
+  "keywords": ["product", "awful", "roadmap", "stupid", "whole", "release", "bullshit", "mess"],
+  "language": "en",
+  "readability": "easy",
+  "toxicity": "medium",
+  "topics": ["other"],
+  "word_count": 15
+}
+```
+
+#### 4) Minimal short-text edge case
+
+**Request**
+```json
+{
+  "text": "OK.",
+  "lang": "auto"
+}
+```
+
+**Response**
+```json
+{
+  "sentiment": "positive",
+  "sentiment_score": 0.65,
+  "summary": "OK.",
+  "keywords": [],
+  "language": "en",
+  "readability": "easy",
+  "toxicity": "none",
+  "topics": ["other"],
+  "word_count": 1
+}
+```
+
+### Notes on Behavior
+
+- Best optimized for **English** input
+- `lang: "auto"` uses simple script-based detection (`en`, `zh`, `ko`, `ja`, `ar`, `ru`)
+- Empty input is rejected
+- Input over **5000 characters** is rejected
+- Topic labels are rule-based (`tech`, `business`, `sports`, `health`, `politics`, `entertainment`, `other`)
+- Toxicity is heuristic-based (`none`, `low`, `medium`, `high`)
+
 ### GET `/health`
 
 ```json
