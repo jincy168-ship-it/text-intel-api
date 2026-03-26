@@ -1,6 +1,6 @@
 # Text Intel API
 
-AI-powered text analysis API built with FastAPI + Claude claude-haiku. Single API call returns sentiment, summary, keywords, topics, readability, toxicity, and more.
+English text analysis API. Single API call returns sentiment, keywords, topics, readability, toxicity, and more — no AI API costs, no rate limits on your end.
 
 ## Features
 
@@ -12,7 +12,7 @@ AI-powered text analysis API built with FastAPI + Claude claude-haiku. Single AP
 - **Toxicity detection** (none / low / medium / high)
 - **Topic classification**
 - **Word count**
-- Supports any language Claude understands
+- Optimized for **English text**
 - Input limit: 5,000 characters
 - CORS fully open (RapidAPI compatible)
 
@@ -170,6 +170,6 @@ async def analyze(request: AnalyzeRequest, x_rapidapi_proxy_secret: str = Header
 
 - **FastAPI** 0.115 — async web framework
 - **Uvicorn** — ASGI server
-- **Anthropic Python SDK** — Claude API client
+- **VADER Sentiment** — battle-tested English NLP library
 - **Pydantic v2** — request/response validation
-- **Claude claude-haiku** — fast, cost-efficient model (~$0.0008/1K tokens)
+- Zero external AI API calls — fast, predictable, no token costs
