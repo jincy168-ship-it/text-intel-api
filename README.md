@@ -1,20 +1,19 @@
 # Text Intel API
 
-English text analysis API. Single API call returns sentiment, keywords, topics, readability, toxicity, and more — no AI API costs, no rate limits on your end.
+FastAPI API for lightweight English text analysis. One request returns sentiment, keywords, topics, readability, toxicity, summary, language, and word count using local heuristics and VADER sentiment — no external AI API calls.
 
 ## Features
 
-- **Sentiment analysis** with score (0.0–1.0)
-- **Auto-summarization** (≤3 sentences)
-- **Keyword extraction** (5–10 keywords)
-- **Language detection** (ISO 639-1 code)
-- **Readability rating** (easy / medium / hard)
-- **Toxicity detection** (none / low / medium / high)
-- **Topic classification**
+- **Sentiment analysis** with score (`0.0-1.0`)
+- **Auto-summary** from the opening sentences
+- **Keyword extraction** (`0-8` keywords)
+- **Language detection** (`en`, `zh`, `ko`, `ja`, `ar`, `ru`) when `lang` is set to `auto`
+- **Readability rating** (`easy`, `medium`, `hard`)
+- **Toxicity detection** (`none`, `low`, `medium`, `high`)
+- **Topic classification** (`tech`, `business`, `sports`, `health`, `politics`, `entertainment`, `other`)
 - **Word count**
-- Optimized for **English text**
-- Input limit: 5,000 characters
-- CORS fully open (RapidAPI compatible)
+- Input limit: **5,000 characters**
+- CORS enabled for all origins
 
 ## API Reference
 
@@ -38,7 +37,7 @@ English text analysis API. Single API call returns sentiment, keywords, topics, 
   "language": "en",
   "readability": "medium",
   "toxicity": "none",
-  "topics": ["technology", "AI"],
+  "topics": ["tech"],
   "word_count": 42
 }
 ```
@@ -147,12 +146,13 @@ English text analysis API. Single API call returns sentiment, keywords, topics, 
 
 ### Notes on Behavior
 
-- Best optimized for **English** input
-- `lang: "auto"` uses simple script-based detection (`en`, `zh`, `ko`, `ja`, `ar`, `ru`)
+- Optimized for **English** input; non-English handling is limited to simple script-based detection unless you explicitly pass `lang`
+- `lang: "auto"` uses regex-based script detection and defaults to `en` when no supported script is detected
+- Summary is just the first `2` sentences of the text
+- Keywords are extracted from English alphabetic words only and filtered with a small stopword list
+- Topic and toxicity outputs are **rule-based heuristics**, not model-based moderation or deep classification
 - Empty input is rejected
 - Input over **5000 characters** is rejected
-- Topic labels are rule-based (`tech`, `business`, `sports`, `health`, `politics`, `entertainment`, `other`)
-- Toxicity is heuristic-based (`none`, `low`, `medium`, `high`)
 
 ### GET `/health`
 
@@ -162,7 +162,10 @@ English text analysis API. Single API call returns sentiment, keywords, topics, 
 
 ### Interactive Docs
 
-Visit `/docs` (Swagger UI) or `/redoc` after starting the server.
+After starting the server, visit:
+
+- `/docs` - Swagger UI
+- `/redoc` - ReDoc
 
 ---
 
@@ -171,7 +174,6 @@ Visit `/docs` (Swagger UI) or `/redoc` after starting the server.
 ### Prerequisites
 
 - Python 3.11+
-- Anthropic API key
 
 ### Setup
 
@@ -180,14 +182,11 @@ git clone <your-repo-url>
 cd text-intel-api
 
 # Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
-
-# Set API key
-export ANTHROPIC_API_KEY=sk-ant-...
 
 # Start server
 uvicorn main:app --reload --port 8000
@@ -207,14 +206,15 @@ curl -X POST http://localhost:8000/analyze \
 
 ## Deploy to Railway
 
+This repo includes both a `Procfile` and `railway.json`. Railway can build it with Nixpacks and run the app with the Procfile command.
+
 ### Option A: GitHub (recommended)
 
 1. Push this project to a GitHub repo
-2. Go to [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo**
+2. Go to [railway.app](https://railway.app) -> **New Project** -> **Deploy from GitHub repo**
 3. Select your repo
-4. Railway auto-detects Python via Nixpacks
-5. Go to **Variables** tab → add `ANTHROPIC_API_KEY = sk-ant-...`
-6. Railway deploys automatically — get your public URL from **Settings → Domains**
+4. Railway will detect the Python app and build it with Nixpacks
+5. Deploy and get your public URL from **Settings -> Domains**
 
 ### Option B: Railway CLI
 
@@ -223,48 +223,44 @@ npm install -g @railway/cli
 railway login
 railway init
 railway up
-
-# Set environment variable
-railway variables set ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 ### Notes
 
-- Railway free tier: 500 hours/month (enough for personal/dev use)
-- Set `PORT` is injected automatically by Railway — no manual config needed
-- Cold starts may take ~2s on free tier
+- No application-specific environment variables are required for the current codebase
+- Railway injects `PORT`; locally the app defaults to `8000`
+- The production start command in this repo is:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port $PORT
+```
 
 ---
 
 ## Publish to RapidAPI
 
-1. Go to [rapidapi.com/provider](https://rapidapi.com/provider) → **Add New API**
+1. Go to [rapidapi.com/provider](https://rapidapi.com/provider) -> **Add New API**
 2. Fill in:
    - **Name:** Text Intel API
    - **Category:** Artificial Intelligence / Machine Learning
    - **Base URL:** `https://your-railway-url.up.railway.app`
 3. Add endpoints:
-   - `POST /analyze` — with request body schema
+   - `POST /analyze`
    - `GET /health`
-4. Set **Security:** No Auth (you can add `X-RapidAPI-Proxy-Secret` header validation later)
-5. Configure **Pricing:** Free tier or freemium plans
+4. Use the exact request and response schemas shown above
+5. Set pricing/auth to match your business choice; the app itself currently does **not** enforce authentication
 6. Submit for review
 
-### Optional: Validate RapidAPI Proxy Secret
+### RapidAPI docs sync checklist
 
-Add this to `main.py` for extra security:
+Before publishing or updating the listing, make sure the RapidAPI page matches the current app behavior:
 
-```python
-from fastapi import Header
-
-RAPIDAPI_SECRET = os.environ.get("RAPIDAPI_PROXY_SECRET")
-
-@app.post("/analyze")
-async def analyze(request: AnalyzeRequest, x_rapidapi_proxy_secret: str = Header(None)):
-    if RAPIDAPI_SECRET and x_rapidapi_proxy_secret != RAPIDAPI_SECRET:
-        raise HTTPException(status_code=403, detail="Forbidden")
-    ...
-```
+- Remove any mention of Anthropic, LLMs, or external AI API keys
+- Describe the API as **local heuristic / VADER-based analysis**, not generative AI
+- Keep the supported language note narrow: best for English, limited script detection for a few non-Latin scripts
+- Keep the input limit at **5000 characters**
+- Match the actual response fields exactly: `sentiment`, `sentiment_score`, `summary`, `keywords`, `language`, `readability`, `toxicity`, `topics`, `word_count`
+- If you later add auth or RapidAPI proxy-secret validation in code, update both the RapidAPI listing and this README together
 
 ---
 
@@ -272,15 +268,14 @@ async def analyze(request: AnalyzeRequest, x_rapidapi_proxy_secret: str = Header
 
 | Variable | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | ✅ Yes | Your Anthropic API key |
-| `PORT` | Auto | Injected by Railway (default: 8000 locally) |
+| `PORT` | Auto in Railway | Injected by Railway; defaults to `8000` locally |
 
 ---
 
 ## Tech Stack
 
-- **FastAPI** 0.115 — async web framework
-- **Uvicorn** — ASGI server
-- **VADER Sentiment** — battle-tested English NLP library
-- **Pydantic v2** — request/response validation
-- Zero external AI API calls — fast, predictable, no token costs
+- **FastAPI** - async web framework
+- **Uvicorn** - ASGI server
+- **VADER Sentiment** - English sentiment analysis
+- **Pydantic v2** - request/response validation
+- Rule-based heuristics for summary, keywords, topics, readability, language, and toxicity
